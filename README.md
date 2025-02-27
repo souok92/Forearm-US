@@ -3,3 +3,4 @@
 
 ## 2025-02-27
  first time v10 trial
+ I have uploaded some test pictures
