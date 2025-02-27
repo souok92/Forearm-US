@@ -1,3 +1,6 @@
+# Description: Convert AVI files to MP4 files using ffmpeg
+# Put converted videos in a new folder named "converted_videos".
+
 import ffmpeg
 import os
 

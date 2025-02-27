@@ -1,3 +1,5 @@
+# image cropping code
+
 import cv2
 
 # 이미지 파일 경로
