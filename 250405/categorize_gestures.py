@@ -14,8 +14,10 @@ def categorize_files(input_folder, output_folder):
         6,7: pinky
         8,9: fist
     프레임 번호:
-        나머지가 0-9: open
-        나머지가 10-18: 해당 태그 동작
+        36프레임 기준으로:
+        - 0~3, 31~35: open 카테고리
+        - 14~22: 해당 태그 동작 카테고리
+        - 그 외 프레임: 분류하지 않음
     """
     # 출력 폴더 생성
     folders = ['open', 'index', 'mid', 'ring', 'pinky', 'fist']
@@ -38,26 +40,32 @@ def categorize_files(input_folder, output_folder):
     
     # 입력 폴더의 모든 파일 처리
     file_count = 0
+    skipped_count = 0
+    
     for filename in os.listdir(input_folder):
         # 파일명 파싱
         match = pattern.match(filename)
         if match:
             name, tag, frame = match.groups()
-            frame = int(frame)
+            frame_num = int(frame)
             
-            # 태그를 정수로 변환하고 첫 번째 자리만 고려
+            # 태그를 정수로 변환하고 마지막 자리만 고려
             tag_num = int(tag) % 10  # 4자리 태그에서 마지막 자리만 사용
             tag_str = str(tag_num)
             
-            # 프레임 번호에 따라 분류
-            # 18로 나눈 나머지가 0-8면 open, 9-17이면 해당 태그 동작
-            remainder = frame % 18
+            # 36프레임을 기준으로 프레임 번호에 따라 분류
+            frame_in_cycle = frame_num % 36
             
-            if 0 <= remainder <= 8:
+            # 새로운 분류 기준 적용
+            if (0 <= frame_in_cycle <= 3) or (31 <= frame_in_cycle <= 35):
                 category = 'open'
-            else:  # 9 <= remainder <= 17
+            elif 14 <= frame_in_cycle <= 22:
                 category = tag_to_category.get(tag_str, 'unknown')
-                print(f"태그: {tag}, 변환된 태그: {tag_str}, 카테고리: {category}")
+                print(f"태그: {tag}, 변환된 태그: {tag_str}, 카테고리: {category}, 프레임: {frame_num}, 사이클 내 프레임: {frame_in_cycle}")
+            else:
+                # 지정된 범위 외의 프레임은 건너뜀
+                skipped_count += 1
+                continue
             
             # 파일 복사
             src_path = os.path.join(input_folder, filename)
@@ -83,12 +91,13 @@ def categorize_files(input_folder, output_folder):
                 print(f"오류 내용: {str(e)}")
                 continue
     
+    print(f"건너뛴 파일: {skipped_count}개 (지정된 프레임 범위 외)")
     return file_count
 
 if __name__ == '__main__':
     # 사용자 입력 받기
-    input_folder = r"C:\Users\souok\Desktop\editver"
-    output_folder = r"C:\Users\souok\Desktop\cat_gest"
+    input_folder = r"./editver"
+    output_folder = r"./cat_gest"
     
     # 경로 정규화 (백슬래시 문제 해결)
     input_folder = os.path.normpath(input_folder)
