@@ -1,0 +1,410 @@
+import os
+import random
+import time
+import torch
+import torch.nn as nn
+import numpy as np
+import mujoco
+from mujoco import viewer
+import msvcrt  # Windows 키 입력 라이브러리
+from PIL import Image
+from torchvision import transforms, models
+from torchvision.models import ResNet18_Weights, MobileNet_V2_Weights, VGG16_Weights, VGG19_Weights
+
+# 경로 설정
+DATA_ROOT = "./cat_gest"  # 데이터셋 디렉토리
+MODEL_PATH = "./best_hand_gesture_mobilenet_model.pth"  # 학습된 모델 경로
+HAND_MODEL_PATH = r"C:\Users\souok\Desktop\mujoco_menagerie-main\shadow_hand\scene_right_no_obj.xml"  # MuJoCo 모델 경로
+
+# 클래스 정의
+CLASSES = ['open', 'index', 'mid', 'ring', 'pinky', 'fist']
+NUM_CLASSES = len(CLASSES)
+
+# 장치 설정
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+# 모델 정의 (학습에 사용한 것과 동일한 아키텍처)
+class HandGestureModel(nn.Module):
+    def __init__(self, model_type='mobilenet', num_classes=NUM_CLASSES):
+        super(HandGestureModel, self).__init__()
+        
+        if model_type == 'resnet18':
+            self.model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
+            self.model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
+        elif model_type == 'mobilenet':
+            self.model = models.mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT)
+            self.model.features[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
+            self.model.classifier[1] = nn.Linear(self.model.last_channel, num_classes)
+        elif model_type == 'vgg16':
+            self.model = models.vgg16(weights=VGG16_Weights.DEFAULT)
+            self.model.features[0] = nn.Conv2d(1, 64, kernel_size=3, padding=1)
+            self.model.classifier[6] = nn.Linear(4096, num_classes)
+        elif model_type == 'vgg19':
+            self.model = models.vgg19(weights=VGG19_Weights.DEFAULT)
+            self.model.features[0] = nn.Conv2d(1, 64, kernel_size=3, padding=1)
+            self.model.classifier[6] = nn.Linear(4096, num_classes)
+        
+    def forward(self, x):
+        return self.model(x)
+
+# 이미지 전처리 변환
+image_transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5], std=[0.5])
+])
+
+# 모델 로드 함수
+def load_model(model_path, model_type='mobilenet'):
+    try:
+        model = HandGestureModel(model_type=model_type).to(device)
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.eval()  # 평가 모드로 설정
+        print(f"모델을 성공적으로 로드했습니다: {model_path}")
+        return model
+    except Exception as e:
+        print(f"모델 로드 중 오류 발생: {e}")
+        return None
+
+# MuJoCo 모델 로드 함수
+def load_mujoco_model(model_path):
+    try:
+        if not os.path.exists(model_path):
+            print(f"MuJoCo 모델 파일을 찾을 수 없습니다: {model_path}")
+            return None, None
+        
+        model = mujoco.MjModel.from_xml_path(model_path)
+        data = mujoco.MjData(model)
+        print("MuJoCo 모델 로드 성공!")
+        return model, data
+    except Exception as e:
+        print(f"MuJoCo 모델 로드 중 오류 발생: {e}")
+        return None, None
+
+# 랜덤 이미지 선택 함수
+def get_random_image():
+    all_images = []
+    
+    # 모든 클래스 폴더에서 이미지 찾기
+    for class_name in CLASSES:
+        class_dir = os.path.join(DATA_ROOT, class_name)
+        if not os.path.isdir(class_dir):
+            continue
+        
+        for img_name in os.listdir(class_dir):
+            if img_name.endswith(('.jpg', '.jpeg', '.png')):
+                img_path = os.path.join(class_dir, img_name)
+                all_images.append((img_path, class_name))
+    
+    if not all_images:
+        print("이미지를 찾을 수 없습니다.")
+        return None, None
+    
+    # 랜덤 이미지 선택
+    img_path, true_class = random.choice(all_images)
+    return img_path, true_class
+
+# 이미지 예측 함수
+def predict_gesture(model, image_path):
+    try:
+        image = Image.open(image_path).convert('L')  # 그레이스케일로 변환
+        image_tensor = image_transform(image).unsqueeze(0).to(device)
+        
+        with torch.no_grad():
+            outputs = model(image_tensor)
+            probabilities = torch.nn.functional.softmax(outputs, dim=1)[0]
+            _, predicted = torch.max(outputs, 1)
+            
+        predicted_class = CLASSES[predicted.item()]
+        confidence = probabilities[predicted.item()].item()
+        
+        return predicted_class, confidence, probabilities.cpu().numpy()
+    except Exception as e:
+        print(f"예측 중 오류 발생: {e}")
+        return None, 0, None
+
+# MuJoCo 관련 함수
+# 액추에이터 이름으로 인덱스 찾기 함수
+def find_actuator_index(model, actuator_name):
+    for i in range(model.nu):
+        if model.actuator(i).name == actuator_name:
+            return i
+    return -1
+
+# 손가락과 관절 매핑 정보 생성 (XML 기반)
+def get_finger_mapping():
+    # XML 파일 분석 결과에 따른 매핑
+    finger_map = {
+        'thumb': ['rh_A_THJ5', 'rh_A_THJ4', 'rh_A_THJ3', 'rh_A_THJ2', 'rh_A_THJ1'],
+        'index': ['rh_A_FFJ4', 'rh_A_FFJ3', 'rh_A_FFJ0'],  # 검지
+        'middle': ['rh_A_MFJ4', 'rh_A_MFJ3', 'rh_A_MFJ0'],  # 중지
+        'ring': ['rh_A_RFJ4', 'rh_A_RFJ3', 'rh_A_RFJ0'],    # 약지
+        'little': ['rh_A_LFJ5', 'rh_A_LFJ4', 'rh_A_LFJ3', 'rh_A_LFJ0'],  # 소지
+        'wrist': ['rh_A_WRJ2', 'rh_A_WRJ1']  # 손목
+    }
+    return finger_map
+
+# rh_A_LFJ5 액추에이터 설정 함수
+def set_lfj5_to_zero(model, data):
+    # rh_A_LFJ5 액추에이터 인덱스 찾기
+    lfj5_idx = find_actuator_index(model, 'rh_A_LFJ5')
+    
+    # 인덱스를 찾았다면 값을 0으로 설정
+    if lfj5_idx >= 0:
+        data.ctrl[lfj5_idx] = 0.0
+
+# 손 제어를 위한 제스처 함수들
+def make_fist(model, data):
+    """주먹 쥐기 동작"""
+    print("주먹 쥐기 동작 실행")
+    
+    # 모든 액추에이터를 초기화
+    for i in range(model.nu):
+        data.ctrl[i] = 0.0
+    
+    # 손가락 매핑 가져오기
+    finger_map = get_finger_mapping()
+    
+    # 각 손가락 관절을 구부림
+    for finger, joints in finger_map.items():
+        if finger == 'wrist':
+            # 손목은 중립 위치
+            for joint in joints:
+                idx = find_actuator_index(model, joint)
+                if idx >= 0:
+                    data.ctrl[idx] = 0.0
+        else:
+            # 다른 모든 관절은 최대한 구부림
+            for joint in joints:
+                # rh_A_LFJ5는 제외하고 설정
+                if joint != 'rh_A_LFJ5':
+                    idx = find_actuator_index(model, joint)
+                    if idx >= 0:
+                        # 엄지 관절 특수 처리
+                        if 'THJ1' in joint:
+                            data.ctrl[idx] = 1.5
+                        elif 'THJ2' in joint:
+                            data.ctrl[idx] = 0.65
+                        elif 'THJ3' in joint:
+                            data.ctrl[idx] = -0.0775
+                        elif 'THJ4' in joint:
+                            data.ctrl[idx] = 0.3
+                        elif 'THJ5' in joint:
+                            data.ctrl[idx] = -0.85
+                        # J4들은 0으로 유지
+                        elif 'J4' in joint:
+                            data.ctrl[idx] = 0
+                        else:
+                            data.ctrl[idx] = 1.5
+    
+    # rh_A_LFJ5 액추에이터를 항상 0으로 설정
+    set_lfj5_to_zero(model, data)
+
+def open_hand(model, data):
+    """손 펴기 (보자기) 동작"""
+    print("손 펴기 동작 실행")
+    
+    # 모든 관절을 0으로 설정해 손을 편다
+    for i in range(model.nu):
+        data.ctrl[i] = 0.0
+
+def point_gesture(model, data):
+    """가리키기 제스처 (검지 펴고 나머지 접기)"""
+    print("가리키기 제스처 실행")
+    
+    # 먼저 주먹 쥐기
+    make_fist(model, data)
+    
+    # 손가락 매핑 가져오기
+    finger_map = get_finger_mapping()
+    
+    # 검지만 펴기
+    for joint in finger_map['index']:
+        idx = find_actuator_index(model, joint)
+        if idx >= 0:
+            data.ctrl[idx] = 0.0  # 검지 펴기
+
+def middle_gesture(model, data):
+    """중지 펴기 제스처"""
+    print("중지 펴기 제스처 실행")
+    
+    # 먼저 주먹 쥐기
+    make_fist(model, data)
+    
+    # 손가락 매핑 가져오기
+    finger_map = get_finger_mapping()
+    
+    # 중지만 펴기
+    for joint in finger_map['middle']:
+        idx = find_actuator_index(model, joint)
+        if idx >= 0:
+            data.ctrl[idx] = 0.0  # 중지 펴기
+
+def ring_gesture(model, data):
+    """약지 펴기 제스처"""
+    print("약지 펴기 제스처 실행")
+    
+    # 먼저 주먹 쥐기
+    make_fist(model, data)
+    
+    # 손가락 매핑 가져오기
+    finger_map = get_finger_mapping()
+    
+    # 약지만 펴기
+    for joint in finger_map['ring']:
+        idx = find_actuator_index(model, joint)
+        if idx >= 0:
+            data.ctrl[idx] = 0.0  # 약지 펴기
+
+def pinky_gesture(model, data):
+    """소지 펴기 제스처"""
+    print("소지 펴기 제스처 실행")
+    
+    # 먼저 주먹 쥐기
+    make_fist(model, data)
+    
+    # 손가락 매핑 가져오기
+    finger_map = get_finger_mapping()
+    
+    # 소지만 펴기
+    for joint in finger_map['little']:
+        idx = find_actuator_index(model, joint)
+        if idx >= 0:
+            data.ctrl[idx] = 0.0  # 소지 펴기
+
+# 비차단 방식으로 키 입력 확인 (Windows용)
+def check_key_press():
+    if msvcrt.kbhit():
+        key = msvcrt.getch().decode('utf-8', errors='ignore')
+        return key
+    return None
+
+# 예측 클래스에 따른 제스처 실행 함수
+def execute_gesture(class_name, mj_model, mj_data):
+    if class_name == 'fist':
+        make_fist(mj_model, mj_data)
+    elif class_name == 'open':
+        open_hand(mj_model, mj_data)
+    elif class_name == 'index':
+        point_gesture(mj_model, mj_data)
+    elif class_name == 'mid':
+        middle_gesture(mj_model, mj_data)
+    elif class_name == 'ring':
+        ring_gesture(mj_model, mj_data)
+    elif class_name == 'pinky':
+        pinky_gesture(mj_model, mj_data)
+    else:
+        print(f"알 수 없는 클래스: {class_name}")
+
+# 메인 함수
+def main():
+    print("손 제스처 인식 및 MuJoCo 제어 프로그램 시작...")
+    print("키 입력 설명:")
+    print("n: 랜덤 이미지 선택 및 예측")
+    print("0: 수동으로 손 펴기")
+    print("1: 수동으로 검지 펴기")
+    print("2: 수동으로 중지 펴기")
+    print("3: 수동으로 약지 펴기")
+    print("4: 수동으로 소지 펴기")
+    print("5: 수동으로 주먹 쥐기")
+    print("q: 종료")
+    
+    # 모델 타입 선택 (학습에 사용한 것과 동일해야 함)
+    model_type = 'mobilenet'
+    
+    # 모델 로드
+    classification_model = load_model(MODEL_PATH, model_type)
+    
+    if classification_model is None:
+        print("분류 모델 로드에 실패했습니다. 프로그램을 종료합니다.")
+        return
+    
+    # MuJoCo 모델 로드
+    mj_model, mj_data = load_mujoco_model(HAND_MODEL_PATH)
+    
+    if mj_model is None or mj_data is None:
+        print("MuJoCo 모델 로드에 실패했습니다. 프로그램을 종료합니다.")
+        return
+    
+    # 초기화
+    mujoco.mj_resetData(mj_model, mj_data)
+    
+    try:
+        # 뷰어 실행
+        with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
+            # 초기 상태 - 손 펴기
+            open_hand(mj_model, mj_data)
+            
+            last_prediction = None
+            running = True
+            
+            while running:
+                # 키 입력 확인
+                key = check_key_press()
+                
+                # 키 처리
+                if key:
+                    if key == 'n':
+                        # 랜덤 이미지 선택 및 예측
+                        img_path, true_class = get_random_image()
+                        if img_path:
+                            print(f"\n랜덤 이미지 선택: {img_path}")
+                            print(f"실제 클래스: {true_class}")
+                            
+                            predicted_class, confidence, probabilities = predict_gesture(classification_model, img_path)
+                            
+                            if predicted_class:
+                                print(f"예측 클래스: {predicted_class} (신뢰도: {confidence:.4f})")
+                                print("각 클래스별 확률:")
+
+                                # 예측된 클래스에 따라 제스처 실행
+                                execute_gesture(predicted_class, mj_model, mj_data)
+                                last_prediction = predicted_class
+                        else:
+                            print("이미지를 찾을 수 없습니다.")
+                    
+                    elif key == '0':
+                        open_hand(mj_model, mj_data)
+                        last_prediction = 'open'
+                    elif key == '1':
+                        point_gesture(mj_model, mj_data)
+                        last_prediction = 'index'
+                    elif key == '2':
+                        middle_gesture(mj_model, mj_data)
+                        last_prediction = 'mid'
+                    elif key == '3':
+                        ring_gesture(mj_model, mj_data)
+                        last_prediction = 'ring'
+                    elif key == '4':
+                        pinky_gesture(mj_model, mj_data)
+                        last_prediction = 'pinky'
+                    elif key == '5':
+                        make_fist(mj_model, mj_data)
+                        last_prediction = 'fist'
+                    elif key == 'q':
+                        print("프로그램을 종료합니다...")
+                        running = False
+                
+                # 모든 프레임에서 rh_A_LFJ5 액추에이터 값을 0으로 유지
+                set_lfj5_to_zero(mj_model, mj_data)
+                
+                # 시뮬레이션 진행
+                mujoco.mj_step(mj_model, mj_data)
+                
+                # 뷰어 업데이트
+                viewer.sync()
+                
+                # 프레임 제어 (60fps 정도로 설정)
+                time.sleep(1/60)
+    
+    except Exception as e:
+        print(f"오류 발생: {e}")
+    
+    finally:
+        print("프로그램이 종료되었습니다.")
+
+# 프로그램 실행
+if __name__ == "__main__":
+    main()
