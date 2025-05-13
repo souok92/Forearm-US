@@ -13,7 +13,7 @@ from torchvision.models import ResNet18_Weights, MobileNet_V2_Weights, VGG16_Wei
 
 DATA_ROOT = "./cat_gest" 
 MODEL_PATH = "./best_hand_gesture_mobilenet_model.pth"
-HAND_MODEL_PATH = r"C:\Users\souok\Desktop\mujoco_menagerie-main\shadow_hand\scene_right_no_obj.xml"
+HAND_MODEL_PATH = r"C:\Users\souok\Desktop\mujoco_menagerie-main\shadow_hand\scene_right_no_obj.xml"  # MuJoCo 모델 경로
 
 CLASSES = ['open', 'index', 'mid', 'ring', 'pinky', 'fist']
 NUM_CLASSES = len(CLASSES)
@@ -304,8 +304,7 @@ def main():
                             print(f"\n랜덤 이미지 선택: {img_path}")
                             print(f"실제 클래스: {true_class}")
                             
-                            predicted_class, confidence, probabilities = \
-                                predict_gesture(classification_model, img_path)
+                            predicted_class, confidence, probabilities = predict_gesture(classification_model, img_path)
                             
                             if predicted_class:
                                 print(f"예측 클래스: {predicted_class} (신뢰도: {confidence:.4f})")
