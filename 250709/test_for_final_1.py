@@ -3,17 +3,18 @@ import random
 import time
 import torch
 import torch.nn as nn
-import numpy as np
 import mujoco
 from mujoco import viewer
 import msvcrt  # Windows 키 입력 라이브러리
 from PIL import Image
 from torchvision import transforms, models
 from torchvision.models import ResNet18_Weights, MobileNet_V2_Weights, VGG16_Weights, VGG19_Weights
+import glob
+from pathlib import Path
 
 DATA_ROOT = "./cat_gest" 
 MODEL_PATH = "./best_hand_gesture_mobilenet_model.pth"
-HAND_MODEL_PATH = r"C:\Users\souok\Desktop\mujoco_menagerie-main\shadow_hand\scene_right_no_obj.xml"
+HAND_MODEL_PATH = "./mujoco_menagerie-main/shadow_hand/scene_right_no_obj.xml"
 
 CLASSES = ['open', 'index', 'mid', 'ring', 'pinky', 'fist']
 NUM_CLASSES = len(CLASSES)
@@ -33,7 +34,7 @@ class HandGestureModel(nn.Module):
             self.model = models.mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT)
             self.model.features[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
             self.model.classifier[1] = nn.Linear(self.model.last_channel, num_classes)
-            print(self.model)
+            # print(self.model)
         elif model_type == 'vgg16':
             self.model = models.vgg16(weights=VGG16_Weights.DEFAULT)
             self.model.features[0] = nn.Conv2d(1, 64, kernel_size=3, padding=1)
@@ -259,18 +260,72 @@ def execute_gesture(class_name, mj_model, mj_data):
     else:
         print(f"알 수 없는 클래스: {class_name}")
 
+def get_buffer_image(buffer_dir, classification_model, last_processed_file=None):
+    """Buffer 폴더에서 가장 최신 이미지를 가져와서 처리"""
+    
+    # Buffer 폴더 존재 확인
+    if not os.path.exists(buffer_dir):
+        return None, last_processed_file
+    
+    # PNG 파일 목록 가져오기
+    png_files = glob.glob(os.path.join(buffer_dir, "*.png"))
+    if not png_files:
+        return None, last_processed_file
+    
+    # 가장 최신 파일 선택
+    latest_file = max(png_files, key=os.path.getctime)
+    
+    # 이전에 처리한 파일과 같다면 스킵
+    if latest_file == last_processed_file:
+        return None, last_processed_file
+    
+    # 파일이 완전히 쓰여졌는지 확인
+    if not is_file_ready(latest_file):
+        return None, last_processed_file
+    
+    print(f"새 이미지 감지: {latest_file}")
+    
+    # 이미지 예측 수행
+    predicted_class, confidence, probabilities = predict_gesture(
+        classification_model, latest_file)
+    
+    if predicted_class:
+        print(f"예측 결과: {predicted_class} (신뢰도: {confidence:.4f})")
+        
+        # 처리 완료 후 파일 삭제
+        os.remove(latest_file)
+        print(f"파일 삭제 완료: {latest_file}")
+        
+        return predicted_class, latest_file
+    else:
+        return None, last_processed_file
+
+def is_file_ready(file_path, max_wait=0.05):  # 더 짧게
+    """파일이 완전히 쓰여졌는지 확인"""
+    try:
+        initial_size = os.path.getsize(file_path)
+        time.sleep(max_wait)
+        current_size = os.path.getsize(file_path)
+        return initial_size == current_size
+    except:
+        return False
+
+def clear_buffer_folder(buffer_dir):
+    """Buffer 폴더의 모든 이미지 파일 삭제"""
+    png_files = glob.glob(os.path.join(buffer_dir, "*.png"))
+    for file in png_files:
+        os.remove(file)
+    print(f"Buffer 폴더 정리 완료: {len(png_files)}개 파일 삭제")
+
 # 메인 함수
 def main():
     
     print("손 제스처 인식 및 MuJoCo 제어 프로그램 시작...")
     print("키 입력 설명:")
     print("n: RANDOM IMAGE PREDICTION")
-    print("0: OPEN")
-    print("1: INDEX")
-    print("2: MIDDLE")
-    print("3: RING")
-    print("4: PINKY")
-    print("5: FIST")
+    print("b: BUFFER IMAGE PREDICTION")      
+    print("a: AUTO MONITORING ON/OFF")         
+    print("c: CLEAR BUFFER FOLDER")
     print("i: 모델 정보 출력")
     print("q: 종료")
     
@@ -288,6 +343,13 @@ def main():
         return
     
     mujoco.mj_resetData(mj_model, mj_data)
+
+    buffer_dir = r"C:\Users\verasonics\Desktop\Buffer"
+
+    # 자동 모니터링 관련 변수
+    auto_monitoring = False
+    last_processed_file = None
+    frame_count = 0  # 프레임 카운터
     
     try:
         with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
@@ -315,28 +377,43 @@ def main():
                                 last_prediction = predicted_class
                         else:
                             print("이미지를 찾을 수 없습니다.")
+
+                    elif key == 'b':
+                        # 수동으로 Buffer 이미지 체크
+                        print("\nBuffer 폴더에서 이미지 확인 중...")
+                        predicted_class, last_processed_file = get_buffer_image(
+                            buffer_dir, classification_model, last_processed_file)
+                        
+                        if predicted_class:
+                            execute_gesture(predicted_class, mj_model, mj_data)
+                            last_prediction = predicted_class
+                        else:
+                            print("새로운 이미지가 없습니다.")
                     
-                    elif key == '0':
-                        open_hand(mj_model, mj_data)
-                        last_prediction = 'open'
-                    elif key == '1':
-                        fold_index(mj_model, mj_data)
-                        last_prediction = 'index'
-                    elif key == '2':
-                        fold_mid(mj_model, mj_data)
-                        last_prediction = 'mid'
-                    elif key == '3':
-                        fold_ring(mj_model, mj_data)
-                        last_prediction = 'ring'
-                    elif key == '4':
-                        fold_pinky(mj_model, mj_data)
-                        last_prediction = 'pinky'
-                    elif key == '5':
-                        make_fist(mj_model, mj_data)
-                        last_prediction = 'fist'
+                    elif key == 'a':
+                        # 자동 모니터링 토글
+                        auto_monitoring = not auto_monitoring
+                        if auto_monitoring:
+                            print("자동 모니터링 시작")
+                        else:
+                            print("자동 모니터링 중지")
+                    
+                    elif key == 'c':
+                        clear_buffer_folder(buffer_dir)
+                    
                     elif key == 'q':
                         print("프로그램을 종료합니다...")
                         running = False
+
+                if auto_monitoring:
+                    # 매 10프레임마다 체크 (60Hz에서 6Hz로 체크)
+                    if frame_count % 5 == 0:
+                        predicted_class, last_processed_file = get_buffer_image(
+                            buffer_dir, classification_model, last_processed_file)
+                        
+                        if predicted_class:
+                            execute_gesture(predicted_class, mj_model, mj_data)
+                            last_prediction = predicted_class
                 
                 # 모든 프레임에서 rh_A_LFJ5 액추에이터 값을 0으로 유지
                 set_lfj5_to_zero(mj_model, mj_data)

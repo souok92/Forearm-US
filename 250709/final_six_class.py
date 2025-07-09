@@ -3,7 +3,6 @@ import random
 import time
 import torch
 import torch.nn as nn
-import numpy as np
 import mujoco
 from mujoco import viewer
 import msvcrt  # Windows 키 입력 라이브러리
@@ -13,7 +12,7 @@ from torchvision.models import ResNet18_Weights, MobileNet_V2_Weights, VGG16_Wei
 
 DATA_ROOT = "./cat_gest" 
 MODEL_PATH = "./best_hand_gesture_mobilenet_model.pth"
-HAND_MODEL_PATH = r"C:\Users\souok\Desktop\mujoco_menagerie-main\shadow_hand\scene_right_no_obj.xml"
+HAND_MODEL_PATH = "./mujoco_menagerie-main/shadow_hand/scene_right_no_obj.xml"
 
 CLASSES = ['open', 'index', 'mid', 'ring', 'pinky', 'fist']
 NUM_CLASSES = len(CLASSES)
@@ -33,7 +32,7 @@ class HandGestureModel(nn.Module):
             self.model = models.mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT)
             self.model.features[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
             self.model.classifier[1] = nn.Linear(self.model.last_channel, num_classes)
-            print(self.model)
+            # print(self.model)
         elif model_type == 'vgg16':
             self.model = models.vgg16(weights=VGG16_Weights.DEFAULT)
             self.model.features[0] = nn.Conv2d(1, 64, kernel_size=3, padding=1)
