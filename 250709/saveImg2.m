@@ -13,11 +13,13 @@ function saveImg(ImageData)
     end
 
     % imaging
-    ImageData(ImageData < 0) = 0; % negative clipping
-    ImageData_log = log10(ImageData + 1);
-    ImageData_norm = ImageData_log - min(ImageData_log(:));
-    ImageData_norm = ImageData_norm / max(ImageData_norm(:));
-    ImageData_uint8 = uint8(ImageData_norm * 255);
+    %ImageData(ImageData < 0) = 0; % negative clipping
+    %ImageData_log = log10(ImageData + 1);
+    %ImageData_norm = ImageData_log - min(ImageData_log(:));
+    %ImageData_norm = ImageData_norm / max(ImageData_norm(:));
+    %ImageData_uint8 = uint8(ImageData_norm * 255);
+
+    ImageData_uint8 = uint8(ImageData);
 
     % file naming
     dt = datetime('now');

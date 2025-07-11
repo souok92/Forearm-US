@@ -252,8 +252,8 @@ Process(1).Parameters = {'imgbufnum',1,...   % number of buffer to process.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 Process(2).classname = 'External';
-Process(2).method = 'saveImg';
-Process(2).Parameters = {'srcbuffer','image',...    % ImageBuffer에서
+Process(2).method = 'saveImg2';
+Process(2).Parameters = {'srcbuffer','image',...   % 후처리 완료된 ImageBuffer
                         'srcbufnum',1,...           % ImageBuffer 1번
                         'srcframenum',-1,...        % 최신 프레임
                         'dstbuffer','none'};
